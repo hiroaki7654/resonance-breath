@@ -576,11 +576,16 @@
     const f = e.target.files[0]; if (!f) return;
     try {
       const o = JSON.parse(await f.text());
-      if (!Array.isArray(o.tests) || !Array.isArray(o.sessions)) throw new Error('形式が違います');
+      if (!o || !Array.isArray(o.tests) || !Array.isArray(o.sessions)) throw new Error('形式が違います');
+      // 1 件でも壊れた記録があれば、何も変えずに断る
+      const okRec = (x) => x && typeof x === 'object' && Number.isFinite(x.id) && typeof x.date === 'string' && !isNaN(Date.parse(x.date));
+      if (![...o.tests, ...o.sessions].every(okRec)) throw new Error('壊れた記録が含まれています');
       const ids = new Set([...db.tests, ...db.sessions].map(x => x.id));
-      db.tests.push(...o.tests.filter(x => !ids.has(x.id))); db.sessions.push(...o.sessions.filter(x => !ids.has(x.id)));
+      const fresh = (x) => !ids.has(x.id) && ids.add(x.id); // ファイル内の重複も 1 件にする
+      const addT = o.tests.filter(fresh), addS = o.sessions.filter(fresh);
+      db.tests.push(...addT); db.sessions.push(...addS);
       db.tests.sort((a, b) => a.id - b.id); db.sessions.sort((a, b) => a.id - b.id);
-      save(); renderHistory(); toastQuality('記録を読み込みました', 'good');
+      save(); renderHistory(); toastQuality(`記録を読み込みました（新しく ${addT.length + addS.length} 件）`, 'good');
     } catch (err) { toastQuality('読み込めませんでした: ' + err.message, 'bad'); }
     e.target.value = '';
   };

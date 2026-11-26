@@ -1,5 +1,5 @@
 // オフラインでも開けるように、アプリのファイルを端末に置いておく。更新したら VERSION を上げる
-const VERSION = 'v4';
+const VERSION = 'v5';
 const FILES = ['./', 'index.html', 'app.js', 'signal.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'voice/in.wav', 'voice/out.wav', 'voice/end.wav', 'voice/lost.wav'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {
