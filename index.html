@@ -90,7 +90,7 @@ nav button.on{color:var(--accent);font-weight:600}
   <!-- 呼吸ガイド（テスト・練習で共通） -->
   <div class="card hidden" id="guideCard">
     <div class="stage"><div class="ring"></div><div class="orb" id="orb"></div>
-      <div class="cue"><b id="cueWord">吸う</b><span id="cueSub"></span></div></div>
+      <div class="cue"><b id="cueWord">吸って</b><span id="cueSub"></span></div></div>
     <div class="prog"><i id="progBar"></i></div>
     <div class="row"><span class="grow muted" id="progText"></span><button class="danger" id="btnStop">やめる</button></div>
     <canvas id="hrChart"></canvas>
@@ -151,11 +151,11 @@ nav button.on{color:var(--accent);font-weight:600}
       <label>吸う割合（吸う:吐く）<br>
         <select id="sRatio"><option value="0.4">4:6（吐く方を長く・おすすめ）</option><option value="0.5">5:5</option><option value="0.33">1:2</option></select></label>
       <div class="row" style="margin-top:10px">
-        <label>吸う・吐くの合図<br><select id="sCue"><option value="voice">女性の声（すって・はいて）</option><option value="chime">音だけ</option><option value="none">なし</option></select></label>
+        <label>吸う・吐くの合図<br><select id="sCue"><option value="voice">女性の声（吸ってー・吐いてー）</option><option value="chime">音だけ</option><option value="none">なし</option></select></label>
         <label><input type="checkbox" id="sWarn" checked> 脈が取れないとき警告音</label>
         <label><input type="checkbox" id="sVib" checked> 振動</label>
       </div>
-      <p class="muted">目を閉じたままでも、声で吸う・吐くが分かります。脈が 3 秒以上取れないと、低めの音が「ポーン」と鳴り（最初の 1 回は声でもお知らせ）、戻ると高い音が小さく鳴ります。</p>
+      <p class="muted">目を閉じたままでも、声で吸う・吐くが分かります。きれいな脈が 3 秒以上取れない（指がずれて乱れているときも含む）と、低めの音が「ポーン」と鳴り（最初の 1 回は声でもお知らせ）、戻ると高い音が小さく鳴ります。</p>
       <button id="btnVoiceTest">合図と警告音を試す</button>
     </div>
     <div class="card">
@@ -179,7 +179,8 @@ nav button.on{color:var(--accent);font-weight:600}
 </nav>
 
 <video id="video" playsinline muted class="hidden"></video>
-<script src="signal.js"></script>
-<script src="app.js"></script>
+<!-- 更新したら ?v= を sw.js の VERSION と同じにする（古い signal.js と新しい app.js が混ざらないように） -->
+<script src="signal.js?v=3"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

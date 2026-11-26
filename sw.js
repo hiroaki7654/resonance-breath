@@ -1,5 +1,5 @@
 // オフラインでも開けるように、アプリのファイルを端末に置いておく。更新したら VERSION を上げる
-const VERSION = 'v2';
+const VERSION = 'v3';
 const FILES = ['./', 'index.html', 'app.js', 'signal.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'voice/in.wav', 'voice/out.wav', 'voice/end.wav', 'voice/lost.wav'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {
@@ -8,6 +8,9 @@ self.addEventListener('activate', (e) => {
 // ネットにつながるときは新しい版を取り、つながらないときは置いてある版を出す
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
-  e.respondWith(fetch(e.request).then(r => { const cp = r.clone(); caches.open(VERSION).then(c => c.put(e.request, cp)); return r; })
+  // 同じサイトのファイルはブラウザのキャッシュも確かめ直して取る（GitHub Pages は 10 分キャッシュするため）
+  const same = new URL(e.request.url).origin === self.location.origin;
+  const net = same ? fetch(e.request.url, { cache: 'no-cache' }) : fetch(e.request);
+  e.respondWith(net.then(r => { const cp = r.clone(); caches.open(VERSION).then(c => c.put(e.request, cp)); return r; })
     .catch(() => caches.match(e.request, { ignoreSearch: true })));
 });

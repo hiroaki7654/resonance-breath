@@ -17,10 +17,11 @@
   // ---------- 拍の受け皿（カメラ・ベルト共通。時刻は performance.now） ----------
   let beats = [];          // {t, rr, ok}
   let source = null;       // 'cam' | 'ble'
-  let lastBeatAt = 0;
+  let lastBeatAt = 0, lastOkAt = 0;
   function onBeat(b) {
     beats.push(b);
     lastBeatAt = now();
+    if (b.ok) lastOkAt = lastBeatAt;
     if (beats.length > 4000) beats.splice(0, beats.length - 4000);
     if (b.ok) $('hrNow').textContent = Math.round(60000 / b.rr);
   }
@@ -95,6 +96,12 @@
 
   let lastFrameT = 0;
   const camStat = []; // 直近 2 秒のフレーム時刻（fps 表示用）と赤・緑の平均
+  let perCache = { t: 0, v: 0 };
+  function camPeriodicity() { // 直近 5 秒の脈波の周期性。1 秒に 1 回だけ計算する
+    const t = now();
+    if (t - perCache.t > 900) { const t1 = ppgBuf.length ? ppgBuf[ppgBuf.length - 1].t : t; perCache = { t, v: S.periodicity(ppgBuf.filter(p => p.t > t1 - 5000)) }; }
+    return perCache.v;
+  }
   function readFrame(t) {
     if (video.readyState < 2 || t === lastFrameT) return;
     lastFrameT = t;
@@ -179,10 +186,12 @@
     const okR = recent.length ? recent.filter(b => b.ok).length / recent.length : 0;
     if (source === 'cam') {
       const fps = camStat.length / 2;
-      $('camDbg').textContent = `${fps.toFixed(0)} fps・赤 ${Math.round(camStat.r || 0)}・緑 ${Math.round(camStat.g || 0)}`;
+      const per = camPeriodicity();
+      $('camDbg').textContent = `${fps.toFixed(0)} fps・赤 ${Math.round(camStat.r || 0)}・緑 ${Math.round(camStat.g || 0)}・脈の形 ${Math.round(per * 100)}`;
       if (!finger) { setQuality('指が乗っていません（ライトの赤い光が指に透けるように）', 'bad'); return; }
       if (camStat.r > 248) { setQuality('明るすぎて脈が消えています。指を少しずらすか、押す強さを変えて', 'bad'); return; }
       if (fps < 15) { setQuality(`カメラのコマ数が少なすぎます（${fps.toFixed(0)} fps）`, 'bad'); return; }
+      if (finger && now() - fingerSince > 4000 && per < 0.4) { setQuality('脈の形が見えません。指を動かさず、押す強さを変えてみて', 'bad'); return; }
     }
     if (t - lastBeatAt > 4000) { setQuality(source === 'cam' ? '脈を探しています…指を動かさずに' : '受信待ち', 'weak'); return; }
     if (recent.length < 8) { setQuality('脈を拾い始めました', 'weak'); return; }
@@ -305,10 +314,17 @@
     o.connect(g).connect(actx.destination); o.start(t); o.stop(t + 0.55);
   }
   // 測りながら実行しているときだけ見張る。3 秒続けて取れなければ鳴らし、取れない間は 8 秒おきに繰り返す
+  // 「取れていない」= きれいな拍（採用した拍）が 4 秒来ない、または直近 8 秒の拍の半分以上が乱れている。
+  // 乱れた拍も数えると、指がずれて雑音を拾っている間は「取れている」ことになり、警告が鳴らなかった（2026-11-26 実機）
   function pulseLost() {
     if (!source) return true; // 途中で接続が切れた
     if (source === 'cam' && (!finger || camStat.r > 248)) return true;
-    return now() - lastBeatAt > 5000;
+    // 雑音でも間隔のそろった「拍らしきもの」が 6 割ほど合格してしまうので、カメラでは脈波の形の周期性も見る
+    if (source === 'cam' && camPeriodicity() < 0.4) return true;
+    const t = now();
+    if (t - lastOkAt > 4000) return true;
+    const recent = beats.filter(b => b.t > t - 8000);
+    return recent.length >= 4 && recent.filter(b => b.ok).length / recent.length < 0.6;
   }
   function watchPulse() {
     if (!run || !run.source || !db.settings.warn) return;
@@ -316,6 +332,7 @@
     if (t - run.t0 < 10000) return; // 始めの 10 秒は待つ
     const lost = pulseLost();
     if (lost) {
+      run.goodSince = 0;
       if (!run.lostSince) { run.lostSince = t; run.warnedAt = 0; }
       if (t - run.lostSince >= 3000 && t - run.warnedAt >= 8000) {
         if (!run.warnedAt && db.settings.cue === 'voice' && clips.lost) { warnTone(); setTimeout(() => run && run.lostSince && say('lost', 0.9), 1000); }
@@ -323,8 +340,9 @@
         run.warnedAt = t;
       }
     } else if (run.lostSince) {
-      if (run.warnedAt) okTone();
-      run.lostSince = 0;
+      // 一瞬戻っただけで解除しない（3 秒続けて取れたら解除）
+      if (!run.goodSince) run.goodSince = t;
+      if (t - run.goodSince >= 3000) { if (run.warnedAt) okTone(); run.lostSince = 0; run.goodSince = 0; }
     }
   }
   setInterval(watchPulse, 1000);
@@ -375,7 +393,7 @@
     const p = S.pacer(t, run.pacerStart, run.bpm, db.settings.ratio);
     if (p.phase !== run.lastPhase) { cue(p.phase === 'in'); buzz(p.phase === 'in'); run.lastPhase = p.phase; }
     $('orb').style.transform = `scale(${0.45 + 0.55 * p.size})`;
-    $('cueWord').textContent = p.phase === 'in' ? '吸う' : '吐く';
+    $('cueWord').textContent = p.phase === 'in' ? '吸って' : '吐いて';
     $('cueSub').textContent = Math.ceil(p.remainMs / 1000) + ' 秒';
     const total = run.tEnd - run.t0;
     $('progBar').style.width = ((t - run.t0) / total * 100).toFixed(1) + '%';

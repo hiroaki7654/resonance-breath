@@ -143,6 +143,20 @@ function run(samples) {
   assert.strictEqual(rec.bpm, null);
 })();
 
+// 3b. 脈波の周期性: きれいな脈は高く、指が乗ったままの雑音は低い（警告を鳴らす判定に使う）
+(() => {
+  const { samples } = synth([{ bpm: 6, sec: 30 }]);
+  const last5 = (arr) => arr.filter(s => s.t > arr[arr.length - 1].t - 5000);
+  const good = S.periodicity(last5(samples));
+  const noisy = []; for (let t = 0; t < 30000; t += 33) noisy.push({ t, v: 200 + 7 * gauss() });
+  const bad = S.periodicity(last5(noisy));
+  // 弱い脈（振幅 1/4・雑音多め）
+  const weak = synth([{ bpm: 6, sec: 30 }], { noise: 1.0 }).samples.map(s => ({ t: s.t, v: 200 + (s.v - 200) / 4 }));
+  const mid = S.periodicity(last5(weak));
+  console.log(`周期性: きれい ${good.toFixed(2)} / 弱い脈 ${mid.toFixed(2)} / 雑音 ${bad.toFixed(2)}`);
+  assert(good > 0.7 && bad < 0.4, '周期性で脈と雑音を分けられない');
+})();
+
 // 4. 心拍ベルトの値の読み取り
 (() => {
   const buf = new DataView(new Uint8Array([0x10, 72, 0x00, 0x04, 0x20, 0x03]).buffer);

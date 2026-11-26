@@ -238,6 +238,30 @@
     return { bpm: top.bpm, reason, close };
   }
 
+  // 脈波の周期性（0〜1）。直近の生の明るさ [{t, v}] から 1 秒の移動平均を引き、
+  // 0.33〜1.5 秒（180〜40 拍/分）のずれでの自己相関の最大を返す。きれいな脈は 0.7 以上、雑音は 0.3 前後
+  function periodicity(samples) {
+    const pts = samples.filter(p => isFinite(p.v));
+    if (pts.length < 60) return 0;
+    const dt = (pts[pts.length - 1].t - pts[0].t) / (pts.length - 1);
+    if (!(dt > 0)) return 0;
+    const h = Math.max(1, Math.round(500 / dt));
+    const y = [];
+    for (let i = h; i < pts.length - h; i++) {
+      let s = 0; for (let j = i - h; j <= i + h; j++) s += pts[j].v;
+      y.push(pts[i].v - s / (2 * h + 1));
+    }
+    const lo = Math.round(330 / dt), hi = Math.min(Math.round(1500 / dt), y.length - 10);
+    let best = 0;
+    for (let L = lo; L <= hi; L++) {
+      let c = 0, a = 0, b = 0;
+      for (let i = 0; i + L < y.length; i++) { c += y[i] * y[i + L]; a += y[i] * y[i]; b += y[i + L] * y[i + L]; }
+      const r = c / (Math.sqrt(a * b) || 1);
+      if (r > best) best = r;
+    }
+    return best;
+  }
+
   // 呼吸ガイドの位相。size は 0（吐ききり）〜1（吸いきり）
   function pacer(tMs, startMs, bpm, inhaleRatio) {
     const period = 60000 / bpm;
@@ -260,7 +284,7 @@
     return { hr, rr };
   }
 
-  const Signal = { PpgBeatDetector, judgeRR, median, mean, rmssd, hrSeries, peakTrough, spectrum, segmentMetrics, recommend, pacer, parseHeartRateMeasurement };
+  const Signal = { PpgBeatDetector, judgeRR, periodicity, median, mean, rmssd, hrSeries, peakTrough, spectrum, segmentMetrics, recommend, pacer, parseHeartRateMeasurement };
   if (typeof module !== 'undefined' && module.exports) module.exports = Signal;
   else root.Signal = Signal;
 })(typeof self !== 'undefined' ? self : this);
