@@ -67,6 +67,15 @@ nav button.on{color:var(--accent);font-weight:600}
 #histChart{height:180px}
 .legend{display:flex;gap:14px;font-size:12px;color:var(--muted)}
 .legend i{display:inline-block;width:12px;height:3px;vertical-align:middle;margin-right:4px}
+.list .item{flex-wrap:wrap}
+.list .full{flex-basis:100%}
+.memoLine{color:var(--muted);font-size:12px}
+.memo{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:13px;padding:6px 0}
+.memo input[type=text]{flex-basis:100%;background:#0d1218;border:1px solid var(--line);border-radius:8px;padding:8px;min-height:40px;color:var(--text)}
+.memo select{min-height:36px}
+#restChart,#ratioChart{height:170px}
+.warnText{color:var(--accent2)}
+.tag{display:inline-block;font-size:11px;border:1px solid var(--accent2);color:var(--accent2);border-radius:6px;padding:0 5px;margin-left:4px}
 .hidden{display:none!important}
 </style>
 </head>
@@ -118,6 +127,26 @@ nav button.on{color:var(--accent);font-weight:600}
     </div>
   </section>
 
+  <section id="tab-rest">
+    <div class="card" id="restSetup">
+      <h2>朝の測定（安静時）</h2>
+      <p class="muted">毎朝、起きてすぐ・トイレの後・同じ姿勢で、自然な呼吸のまま測ります。合図の声やガイドは出ません。日ごとの値を自分の平均と比べるための記録です。</p>
+      <div class="row">
+        <label>姿勢<br><select id="rPosture"><option value="sit">座る</option><option value="lie">寝る</option></select></label>
+        <label>時間<br><select id="rMin"><option value="2">2 分</option><option value="3" selected>3 分</option><option value="5">5 分</option></select></label>
+      </div>
+      <p class="muted warnText hidden" id="rPostureWarn"></p>
+      <p class="muted">2 分未満でやめると記録しません。</p>
+      <div class="row"><button class="primary grow" id="btnRest">測定開始</button></div>
+    </div>
+    <div class="card hidden" id="restResult">
+      <h2>今回の記録</h2>
+      <table id="rResTable"></table>
+      <p class="muted" id="rRefNote"></p>
+      <div id="rMemo"></div>
+    </div>
+  </section>
+
   <section id="tab-practice">
     <div class="card" id="practiceSetup">
       <h2>毎日の練習</h2>
@@ -132,18 +161,34 @@ nav button.on{color:var(--accent);font-weight:600}
     <div class="card hidden" id="practiceResult">
       <h2>今回の記録</h2>
       <table id="pResTable"></table>
+      <div id="pMemo"></div>
     </div>
   </section>
 
   <section id="tab-history">
+    <div class="card hidden" id="retestCard"><p id="retestNote"></p></div>
     <div class="card">
-      <h2>推移</h2>
+      <h2>朝の安静時（ln RMSSD）</h2>
+      <div class="legend"><span><i style="background:var(--accent2)"></i>日ごと</span><span><i style="background:var(--accent)"></i>7 日平均</span><span><i style="background:rgba(95,196,184,.35)"></i>基準（直前 28 日の平均±1.5 標準偏差）</span><span style="color:var(--warn)">○ 基準を下回った日</span></div>
+      <canvas id="restChart"></canvas>
+      <p class="muted" id="restEmpty">朝の測定がまだありません。</p>
+      <p class="muted" id="restSummary"></p>
+    </div>
+    <div class="card">
+      <h2>練習の振れ幅倍率</h2>
+      <canvas id="ratioChart"></canvas>
+      <p class="muted" id="ratioEmpty">朝の測定と練習の両方がある日がまだありません。</p>
+      <p class="muted">その日の練習の山谷差 ÷ その日の朝の安静時の山谷差。朝の測定が無い日は出しません。</p>
+    </div>
+    <div class="card">
+      <h2>練習の推移</h2>
       <div class="legend"><span><i style="background:var(--accent)"></i>山谷差（拍/分）</span><span><i style="background:var(--accent2)"></i>RMSSD（ms）</span></div>
       <canvas id="histChart"></canvas>
       <p class="muted" id="histEmpty">練習の記録がまだありません。</p>
     </div>
     <div class="card"><h2>テスト</h2><div class="list" id="testList"></div></div>
     <div class="card"><h2>練習</h2><div class="list" id="sessList"></div></div>
+    <div class="card"><h2>朝の測定</h2><div class="list" id="restList"></div></div>
   </section>
 
   <section id="tab-settings">
@@ -180,6 +225,7 @@ nav button.on{color:var(--accent);font-weight:600}
 
 <nav>
   <button data-tab="test" class="on">テスト</button>
+  <button data-tab="rest">朝</button>
   <button data-tab="practice">練習</button>
   <button data-tab="history">記録</button>
   <button data-tab="settings">設定</button>
@@ -187,7 +233,8 @@ nav button.on{color:var(--accent);font-weight:600}
 
 <video id="video" playsinline muted class="hidden"></video>
 <!-- 更新したら ?v= を sw.js の VERSION と同じにする（古い signal.js と新しい app.js が混ざらないように） -->
-<script src="signal.js?v=5"></script>
-<script src="app.js?v=5"></script>
+<script src="signal.js?v=6"></script>
+<script src="trend.js?v=6"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

@@ -2,15 +2,17 @@
 (() => {
   'use strict';
   const S = window.Signal;
+  const T = window.Trend;
   const $ = (id) => document.getElementById(id);
   const now = () => performance.now();
 
   // ---------- 保存 ----------
   const KEY = 'resonance-breath.v1';
-  const DEF = { settings: { ratio: 0.4, cue: 'voice', warn: true, vib: true, segSec: 120, bpm: 6, practiceMin: 10, camId: null, verify: false }, tests: [], sessions: [] };
+  const DEF = { settings: { ratio: 0.4, cue: 'voice', warn: true, vib: true, segSec: 120, bpm: 6, practiceMin: 10, camId: null, verify: false }, tests: [], sessions: [], rests: [] }; // rests = 朝の安静時測定（kind: 'rest'）。練習の sessions とは別の配列（kind の無い古い記録は練習）
   let db;
   try { db = Object.assign({}, DEF, JSON.parse(localStorage.getItem(KEY) || '{}')); db.settings = Object.assign({}, DEF.settings, db.settings); }
   catch (e) { db = JSON.parse(JSON.stringify(DEF)); }
+  if (!Array.isArray(db.rests)) db.rests = [];
   if ('sound' in db.settings) { if (db.settings.sound === false) db.settings.cue = 'none'; delete db.settings.sound; } // 旧設定から移す
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { toastQuality('記録を保存できませんでした（容量不足の可能性）', 'bad'); } };
 
@@ -371,7 +373,7 @@
       run.goodSince = 0;
       if (!run.lostSince) { run.lostSince = t; run.warnedAt = 0; }
       if (t - run.lostSince >= 3000 && t - run.warnedAt >= 8000) {
-        if (!run.warnedAt && db.settings.cue === 'voice' && clips.lost) { warnTone(); setTimeout(() => run && run.lostSince && say('lost', 0.9), 1000); }
+        if (!run.warnedAt && db.settings.cue === 'voice' && clips.lost && run.kind !== 'rest') { warnTone(); setTimeout(() => run && run.lostSince && say('lost', 0.9), 1000); }
         else warnTone();
         run.warnedAt = t;
       }
@@ -394,19 +396,19 @@
   let run = null; // {kind, segs:[{bpm,start,end}], idx, pacerStart, bpm, t0, tEnd, lastPhase}
   async function startRun(kind, plan) {
     // テストは心拍が要る。練習は測らずにガイドだけでもよい（カメラのライトを長く点けると熱くなるため）
-    if (!source && kind === 'test') { toastQuality('先に「カメラで測る」か「心拍ベルト」を選んでください', 'bad'); window.scrollTo(0, 0); return; }
+    if (!source && (kind === 'test' || kind === 'rest')) { toastQuality('先に「カメラで測る」か「心拍ベルト」を選んでください', 'bad'); window.scrollTo(0, 0); return; }
     ensureAudio(); lockScreen();
     await Promise.race([loadClips(), new Promise(r => setTimeout(r, 2000))]); // 最初の「すって」に間に合わせる
     const t0 = now();
     let acc = t0;
     const segs = plan.map(p => { const s = { bpm: p.bpm, start: acc, end: acc + p.sec * 1000 }; acc = s.end; return s; });
-    run = { kind, source, segs, idx: 0, pacerStart: t0, bpm: segs[0].bpm, t0, tEnd: acc, lastPhase: null, beatFrom: beats.length };
+    run = { kind, posture: plan.posture, source, segs, idx: 0, pacerStart: t0, bpm: segs[0].bpm, t0, tEnd: acc, lastPhase: null, beatFrom: beats.length };
     if (verifyOn()) run.verifyRecs = segs.map(s => { const o = { kind, startT: s.start, bpm: s.bpm, durationMs: s.end - s.start }; ensureVerifyLog().segments.push(o); return o; });
     $('guideCard').classList.remove('hidden');
     $('srcCard').querySelector('.src').classList.add('hidden');
     document.querySelectorAll('nav button').forEach(b => b.disabled = true);
-    $('testIntro').classList.add('hidden'); $('practiceSetup').classList.add('hidden');
-    $('testResult').classList.add('hidden'); $('practiceResult').classList.add('hidden');
+    $('testIntro').classList.add('hidden'); $('practiceSetup').classList.add('hidden'); $('restSetup').classList.add('hidden');
+    $('testResult').classList.add('hidden'); $('practiceResult').classList.add('hidden'); $('restResult').classList.add('hidden');
     tick();
   }
   function endRun(completed) {
@@ -415,32 +417,36 @@
     $('guideCard').classList.add('hidden');
     $('srcCard').querySelector('.src').classList.remove('hidden');
     document.querySelectorAll('nav button').forEach(b => b.disabled = false);
-    $('testIntro').classList.remove('hidden'); $('practiceSetup').classList.remove('hidden');
+    $('testIntro').classList.remove('hidden'); $('practiceSetup').classList.remove('hidden'); $('restSetup').classList.remove('hidden');
     if (!r) return;
     const tStop = now();
     if (r.verifyRecs) for (const o of r.verifyRecs) { o.durationMs = Math.max(0, Math.min(o.durationMs, tStop - o.startT)); if (o.durationMs <= 0 && verifyLog) verifyLog.segments.splice(verifyLog.segments.indexOf(o), 1); }
-    if (r.kind === 'test') finishTest(r, completed, tStop); else finishPractice(r, tStop);
+    if (r.kind === 'test') finishTest(r, completed, tStop); else if (r.kind === 'rest') finishRest(r, tStop); else finishPractice(r, tStop);
   }
 
   function tick() {
     if (!run) return;
     const t = now();
-    if (t >= run.tEnd) { if (db.settings.cue === 'voice' && !say('end')) chime(false); else if (db.settings.cue === 'chime') chime(false); endRun(true); return; }
+    const isRest = run.kind === 'rest'; // 朝の測定: ペーサー・声・振動なし
+    if (t >= run.tEnd) { if (isRest) okTone(); else if (db.settings.cue === 'voice' && !say('end')) chime(false); else if (db.settings.cue === 'chime') chime(false); endRun(true); return; }
     let seg = run.segs[run.idx];
     if (t >= seg.end) { run.idx++; seg = run.segs[run.idx]; run.pacerStart = seg.start; run.bpm = seg.bpm; run.lastPhase = null; }
     const p = S.pacer(t, run.pacerStart, run.bpm, db.settings.ratio);
-    if (p.phase !== run.lastPhase) { cue(p.phase === 'in'); buzz(p.phase === 'in'); run.lastPhase = p.phase; }
-    $('orb').style.transform = `scale(${0.45 + 0.55 * p.size})`;
-    $('cueWord').textContent = p.phase === 'in' ? '吸って' : '吐いて';
-    $('cueSub').textContent = Math.ceil(p.remainMs / 1000) + ' 秒';
+    if (!isRest && p.phase !== run.lastPhase) { cue(p.phase === 'in'); buzz(p.phase === 'in'); run.lastPhase = p.phase; }
+    if (isRest) { $('orb').style.transform = 'scale(0.6)'; $('cueWord').textContent = '自然な呼吸で'; $('cueSub').textContent = Math.ceil((run.tEnd - t) / 1000) + ' 秒'; }
+    else {
+      $('orb').style.transform = `scale(${0.45 + 0.55 * p.size})`;
+      $('cueWord').textContent = p.phase === 'in' ? '吸って' : '吐いて';
+      $('cueSub').textContent = Math.ceil(p.remainMs / 1000) + ' 秒';
+    }
     const total = run.tEnd - run.t0;
     $('progBar').style.width = ((t - run.t0) / total * 100).toFixed(1) + '%';
     const left = Math.ceil((run.kind === 'test' ? seg.end - t : run.tEnd - t) / 1000);
     const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
-    $('progText').textContent = run.kind === 'test'
+    $('progText').textContent = isRest ? `残り ${mmss}` : run.kind === 'test'
       ? `${run.idx + 1}/${run.segs.length}　${seg.bpm} 回/分　残り ${mmss}`
       : `${seg.bpm} 回/分　残り ${mmss}`;
-    drawHr(run);
+    drawHr(isRest ? null : run);
     requestAnimationFrame(tick);
   }
 
@@ -482,8 +488,71 @@
     [['時間', s.minutes + ' 分'], ['テンポ', s.bpm + ' 回/分'], ['平均心拍', f1(s.meanHr, 0) + ' 拍/分'], ['山谷差', f1(s.peakTrough) + ' 拍/分'],
      ['RMSSD', f1(s.rmssd, 0) + ' ms'], ['呼吸帯', isFinite(s.breathShare) ? Math.round(s.breathShare * 100) + '%' : '—'], ['採用', Math.round(s.okRatio * 100) + '%']]
       .forEach(([k, v]) => { const tr = tb.insertRow(); tr.insertCell().textContent = k; tr.insertCell().textContent = v; });
+    showMemo($('pMemo'), s);
     $('practiceResult').classList.remove('hidden');
     renderHistory();
+  }
+
+  // 朝の測定。自然な呼吸なのでガイドは無い。山谷差は 10 秒の窓（6 回/分の 1 呼吸と同じ長さ）の最大−最小の平均で、練習の山谷差との倍率に使う
+  const REST_MIN_SEC = 120;
+  const POSTURE = { sit: '座る', lie: '寝る' };
+  function finishRest(r, tStop) {
+    const dur = (tStop - r.t0) / 1000;
+    if (dur < REST_MIN_SEC) { toastQuality('2 分未満なので記録しませんでした', 'weak'); return; }
+    const m = S.segmentMetrics(beats, { tStart: r.t0 + SETTLE, tEnd: tStop, pacerStart: r.t0, bpm: 6 });
+    const rec = { id: Date.now(), kind: 'rest', date: new Date().toISOString(), source: r.source || 'none', posture: r.posture, minutes: Math.round(dur / 6) / 10,
+      meanHr: m.meanHr, rmssd: m.rmssd, lnRmssd: T.lnRmssd(m.rmssd), peakTrough: m.peakTrough, okRatio: m.okRatio };
+    rec.reference = T.isReference(rec);
+    db.rests.push(rec); save();
+    const tb = $('rResTable'); tb.textContent = '';
+    [['姿勢', POSTURE[rec.posture] || '—'], ['時間', rec.minutes + ' 分'], ['平均心拍', f1(rec.meanHr, 0) + ' 拍/分'], ['RMSSD', f1(rec.rmssd, 0) + ' ms'], ['ln RMSSD', f1(rec.lnRmssd, 2)],
+     ['採用', Math.round(rec.okRatio * 100) + '%']]
+      .forEach(([k, v]) => { const tr = tb.insertRow(); tr.insertCell().textContent = k; tr.insertCell().textContent = v; });
+    $('rRefNote').textContent = rec.reference ? `採用率が ${Math.round(T.REF_OK_RATIO * 100)}% 未満（または値が出ていない）ので「参考値」として残しました。平均と基準の計算には入れません。` : '';
+    showMemo($('rMemo'), rec);
+    $('restResult').classList.remove('hidden');
+    renderHistory();
+  }
+  function updatePostureWarn() {
+    const last = db.rests[db.rests.length - 1], cur = $('rPosture').value;
+    const w = $('rPostureWarn');
+    const diff = last && last.posture && last.posture !== cur;
+    w.classList.toggle('hidden', !diff);
+    if (diff) w.textContent = `前回は「${POSTURE[last.posture]}」で測りました。姿勢が違うと値が変わるので、前回と比べるときは同じ姿勢で。`;
+  }
+
+  // 体調メモ（任意）。記録ごとに rec.memo へ保存する。何も入っていなければ memo は付けない
+  function memoEditor(rec, onChange) {
+    const box = document.createElement('div'); box.className = 'memo full';
+    const m = rec.memo || {};
+    const sel = document.createElement('select');
+    [['', '睡眠: 未記入'], ['good', '睡眠: 良い'], ['bad', '睡眠: 悪い']].forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; sel.appendChild(o); });
+    sel.value = m.sleep || '';
+    const cb = (key, label) => { const l = document.createElement('label'), c = document.createElement('input'); c.type = 'checkbox'; c.checked = !!m[key]; c.dataset.k = key; l.append(c, ' ' + label); return l; };
+    const txt = document.createElement('input'); txt.type = 'text'; txt.maxLength = 200; txt.placeholder = '自由記述（任意）'; txt.value = m.text || '';
+    box.append(sel, cb('alcohol', '前夜の酒'), cb('sick', '体調不良'), cb('hard', '激しい運動'), txt);
+    const commit = () => {
+      const memo = T.normalizeMemo({ sleep: sel.value, alcohol: box.querySelector('[data-k=alcohol]').checked, sick: box.querySelector('[data-k=sick]').checked,
+        hard: box.querySelector('[data-k=hard]').checked, text: txt.value });
+      if (memo) rec.memo = memo; else delete rec.memo;
+      save(); if (onChange) onChange();
+    };
+    box.addEventListener('change', commit);
+    box.addEventListener('click', (e) => e.stopPropagation());
+    return box;
+  }
+  function showMemo(container, rec) { container.textContent = ''; const p = document.createElement('p'); p.className = 'muted'; p.textContent = '体調メモ（任意）'; container.append(p, memoEditor(rec, renderHistory)); }
+  // 記録の行に、メモの要約と、タップで開くメモ欄を付ける
+  function attachMemo(it, rec) {
+    const line = document.createElement('div'); line.className = 'memoLine full';
+    const setLine = () => { const s = T.memoSummary(rec.memo); line.textContent = s ? '体調メモ: ' + s : ''; line.classList.toggle('hidden', !s); };
+    setLine(); it.appendChild(line);
+    let ed = null;
+    it.style.cursor = 'pointer';
+    it.addEventListener('click', () => {
+      if (ed) { ed.remove(); ed = null; return; }
+      ed = memoEditor(rec, setLine); it.appendChild(ed);
+    });
   }
 
   // ---------- 記録 ----------
@@ -502,10 +571,79 @@
       const it = document.createElement('div'); it.className = 'item';
       const a = document.createElement('span'); a.textContent = `${fmtDate(s.date)}　${s.bpm} 回/分 ${s.minutes} 分`;
       const b = document.createElement('span'); b.textContent = `山谷差 ${f1(s.peakTrough)}・RMSSD ${f1(s.rmssd, 0)}`;
-      it.append(a, b); sl.appendChild(it);
+      it.append(a, b); attachMemo(it, s); sl.appendChild(it);
     });
     if (!db.sessions.length) sl.textContent = 'まだありません';
-    drawHistory();
+    const rl = $('restList'); rl.textContent = '';
+    db.rests.slice().reverse().forEach(x => {
+      const it = document.createElement('div'); it.className = 'item';
+      const a = document.createElement('span'); a.textContent = `${fmtDate(x.date)}　${POSTURE[x.posture] || ''} ${x.minutes} 分`;
+      if (x.reference) { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = '参考値'; a.appendChild(tg); }
+      const b = document.createElement('span'); b.textContent = `ln RMSSD ${f1(x.lnRmssd, 2)}・心拍 ${f1(x.meanHr, 0)}`;
+      it.append(a, b); attachMemo(it, x); rl.appendChild(it);
+    });
+    if (!db.rests.length) rl.textContent = 'まだありません';
+    const due = T.retestDue(db.tests, Date.now());
+    $('retestCard').classList.toggle('hidden', due === null);
+    $('retestNote').textContent = due === 'none' ? '共鳴テンポのテストはまだです。月に 1 回ほど測り直します。' : due === null ? '' : `共鳴テンポの測り直し: 最後のテストから ${due} 日たっています（目安は月に 1 回）。毎日でなく月 1 回で足ります。`;
+    drawAll();
+  }
+  function drawAll() { drawHistory(); drawRestChart(); drawRatioChart(); }
+  // 日ごとの推移（朝の ln RMSSD・7 日平均・基準の帯・下回った日の印）。直近 60 日
+  function dayAxis(rows) { const n0 = rows[0].num, n1 = rows[rows.length - 1].num; return { n0, n1, span: Math.max(1, n1 - n0) }; }
+  function drawRestChart() {
+    const c = $('restChart');
+    const all = T.buildTrend(db.rests, db.sessions);
+    const rows = all.filter(r => Number.isFinite(r.ln)).slice(-60);
+    $('restEmpty').classList.toggle('hidden', rows.length > 0);
+    c.classList.toggle('hidden', rows.length === 0);
+    const last = rows[rows.length - 1];
+    const refN = db.rests.filter(x => T.isReference(x)).length;
+    $('restSummary').textContent = rows.length ? [`直近 ${last.day}: ln RMSSD ${f1(last.ln, 2)}`, last.band ? `基準 ${f1(last.band.mean, 2)} ± ${f1(last.band.sd, 2)}${last.flag === 'low' ? '（基準を下回った日）' : ''}` : '基準は直前 7 日分の測定がそろうと出ます',
+      refN ? `参考値 ${refN} 件は平均・基準から除外` : ''].filter(Boolean).join('　') : '';
+    if (!rows.length || !c.offsetParent) return;
+    const { ctx, w, h } = fitCanvas(c); ctx.clearRect(0, 0, w, h);
+    const padL = 30, padR = 8, padT = 8, padB = 20, { n0, span } = dayAxis(rows);
+    const X = (n) => padL + (rows.length === 1 ? (w - padL - padR) / 2 : (n - n0) / span * (w - padL - padR));
+    const vs = []; rows.forEach(r => { vs.push(r.ln); if (Number.isFinite(r.ma7)) vs.push(r.ma7); if (r.band) vs.push(r.band.mean - 1.5 * r.band.sd, r.band.mean + 1.5 * r.band.sd); });
+    let mn = Math.min(...vs), mx = Math.max(...vs); const pad = (mx - mn) * 0.1 || 0.1; mn -= pad; mx += pad;
+    const Y = (v) => h - padB - (v - mn) / (mx - mn) * (h - padT - padB);
+    ctx.strokeStyle = css('--line'); ctx.beginPath(); ctx.moveTo(padL, h - padB); ctx.lineTo(w - padR, h - padB); ctx.stroke();
+    const bandRows = rows.filter(r => r.band);
+    if (bandRows.length >= 2) {
+      ctx.fillStyle = 'rgba(95,196,184,.18)'; ctx.beginPath();
+      bandRows.forEach((r, i) => { const x = X(r.num), y = Y(r.band.mean + 1.5 * r.band.sd); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      for (let i = bandRows.length - 1; i >= 0; i--) ctx.lineTo(X(bandRows[i].num), Y(bandRows[i].band.mean - 1.5 * bandRows[i].band.sd));
+      ctx.closePath(); ctx.fill();
+    }
+    const maRows = rows.filter(r => Number.isFinite(r.ma7));
+    if (maRows.length >= 2) { ctx.strokeStyle = css('--accent'); ctx.lineWidth = 2; ctx.beginPath(); maRows.forEach((r, i) => { const x = X(r.num), y = Y(r.ma7); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke(); }
+    ctx.fillStyle = css('--accent2');
+    rows.forEach(r => { ctx.beginPath(); ctx.arc(X(r.num), Y(r.ln), 3, 0, 7); ctx.fill(); });
+    ctx.strokeStyle = css('--warn'); ctx.lineWidth = 2;
+    rows.filter(r => r.flag === 'low').forEach(r => { ctx.beginPath(); ctx.arc(X(r.num), Y(r.ln), 7, 0, 7); ctx.stroke(); });
+    ctx.fillStyle = css('--muted'); ctx.font = '11px system-ui'; ctx.textAlign = 'left';
+    ctx.fillText(mx.toFixed(1), 0, padT + 8); ctx.fillText(mn.toFixed(1), 0, h - padB - 2);
+    ctx.fillText(rows[0].day.slice(5), padL, h - 4); ctx.textAlign = 'right'; ctx.fillText(last.day.slice(5), w - padR, h - 4);
+  }
+  // 練習の振れ幅倍率の推移（朝と練習がそろった日だけ）
+  function drawRatioChart() {
+    const c = $('ratioChart');
+    const rows = T.buildTrend(db.rests, db.sessions).filter(r => Number.isFinite(r.ratio)).slice(-60);
+    $('ratioEmpty').classList.toggle('hidden', rows.length > 0);
+    c.classList.toggle('hidden', rows.length === 0);
+    if (!rows.length || !c.offsetParent) return;
+    const { ctx, w, h } = fitCanvas(c); ctx.clearRect(0, 0, w, h);
+    const padL = 30, padR = 8, padT = 8, padB = 20, { n0, span } = dayAxis(rows);
+    const X = (n) => padL + (rows.length === 1 ? (w - padL - padR) / 2 : (n - n0) / span * (w - padL - padR));
+    const mx = Math.max(...rows.map(r => r.ratio)) * 1.1 || 1;
+    const Y = (v) => h - padB - v / mx * (h - padT - padB);
+    ctx.strokeStyle = css('--line'); ctx.beginPath(); ctx.moveTo(padL, h - padB); ctx.lineTo(w - padR, h - padB); ctx.stroke();
+    ctx.strokeStyle = css('--accent'); ctx.fillStyle = css('--accent'); ctx.lineWidth = 2; ctx.beginPath();
+    rows.forEach((r, i) => { const x = X(r.num), y = Y(r.ratio); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+    rows.forEach(r => { ctx.beginPath(); ctx.arc(X(r.num), Y(r.ratio), 3, 0, 7); ctx.fill(); });
+    ctx.fillStyle = css('--muted'); ctx.font = '11px system-ui'; ctx.textAlign = 'left';
+    ctx.fillText(mx.toFixed(1) + ' 倍', 0, padT + 8); ctx.fillText(rows[0].day.slice(5), padL, h - 4); ctx.textAlign = 'right'; ctx.fillText(rows[rows.length - 1].day.slice(5), w - padR, h - 4);
   }
   function drawHistory() {
     const c = $('histChart');
@@ -553,6 +691,7 @@
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
     $('srcCard').classList.toggle('hidden', name === 'history' || name === 'settings');
     if (name === 'history') renderHistory();
+    if (name === 'rest') updatePostureWarn();
     window.scrollTo(0, 0);
   }
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
@@ -569,6 +708,13 @@
     db.settings.bpm = bpm; db.settings.practiceMin = Number($('pMin').value); save();
     startRun('practice', [{ bpm, sec: db.settings.practiceMin * 60 }]);
   };
+  $('btnRest').onclick = () => {
+    const min = Number($('rMin').value) || 3;
+    db.settings.restMin = min; db.settings.restPosture = $('rPosture').value; save();
+    const plan = [{ bpm: 6, sec: min * 60 }]; plan.posture = $('rPosture').value;
+    startRun('rest', plan);
+  };
+  $('rPosture').onchange = updatePostureWarn;
   $('btnJson1').onclick = () => { const t = db.tests[db.tests.length - 1]; if (t && t.bpm) $('pBpm').value = t.bpm; saveBreathingJson(); };
   $('btnJson2').onclick = saveBreathingJson;
   $('btnExport').onclick = () => download(`resonance-records-${new Date().toISOString().slice(0, 10)}.json`, db);
@@ -577,15 +723,17 @@
     try {
       const o = JSON.parse(await f.text());
       if (!o || !Array.isArray(o.tests) || !Array.isArray(o.sessions)) throw new Error('形式が違います');
+      if (o.rests === undefined) o.rests = []; // 朝の測定が入る前の書き出し
+      if (!Array.isArray(o.rests)) throw new Error('形式が違います');
       // 1 件でも壊れた記録があれば、何も変えずに断る
       const okRec = (x) => x && typeof x === 'object' && Number.isFinite(x.id) && typeof x.date === 'string' && !isNaN(Date.parse(x.date));
-      if (![...o.tests, ...o.sessions].every(okRec)) throw new Error('壊れた記録が含まれています');
-      const ids = new Set([...db.tests, ...db.sessions].map(x => x.id));
+      if (![...o.tests, ...o.sessions, ...o.rests].every(okRec)) throw new Error('壊れた記録が含まれています');
+      const ids = new Set([...db.tests, ...db.sessions, ...db.rests].map(x => x.id));
       const fresh = (x) => !ids.has(x.id) && ids.add(x.id); // ファイル内の重複も 1 件にする
-      const addT = o.tests.filter(fresh), addS = o.sessions.filter(fresh);
-      db.tests.push(...addT); db.sessions.push(...addS);
-      db.tests.sort((a, b) => a.id - b.id); db.sessions.sort((a, b) => a.id - b.id);
-      save(); renderHistory(); toastQuality(`記録を読み込みました（新しく ${addT.length + addS.length} 件）`, 'good');
+      const addT = o.tests.filter(fresh), addS = o.sessions.filter(fresh), addR = o.rests.filter(fresh);
+      db.tests.push(...addT); db.sessions.push(...addS); db.rests.push(...addR);
+      db.tests.sort((a, b) => a.id - b.id); db.sessions.sort((a, b) => a.id - b.id); db.rests.sort((a, b) => a.id - b.id);
+      save(); renderHistory(); toastQuality(`記録を読み込みました（新しく ${addT.length + addS.length + addR.length} 件）`, 'good');
     } catch (err) { toastQuality('読み込めませんでした: ' + err.message, 'bad'); }
     e.target.value = '';
   };
@@ -609,6 +757,7 @@
   };
   $('sVib').checked = db.settings.vib; $('sVib').onchange = (e) => { db.settings.vib = e.target.checked; save(); };
   $('segSec').value = String(db.settings.segSec);
+  { const lr = db.rests[db.rests.length - 1]; $('rPosture').value = db.settings.restPosture || (lr && lr.posture) || 'sit'; if (db.settings.restMin) $('rMin').value = String(db.settings.restMin); updatePostureWarn(); }
   $('pBpm').value = db.settings.bpm; $('pMin').value = String(db.settings.practiceMin);
   function updateNote() {
     const bpm = Number($('pBpm').value) || 6, per = 60 / bpm;
@@ -620,7 +769,7 @@
 
   // 波形はテスト中以外も描く
   (function loop() { drawPpg(); if (!run && $('guideCard').classList.contains('hidden') === false) drawHr(null); requestAnimationFrame(loop); })();
-  window.addEventListener('resize', drawHistory);
+  window.addEventListener('resize', drawAll);
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
