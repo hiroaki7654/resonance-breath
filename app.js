@@ -7,10 +7,11 @@
 
   // ---------- 保存 ----------
   const KEY = 'resonance-breath.v1';
-  const DEF = { settings: { ratio: 0.4, sound: true, vib: true, segSec: 120, bpm: 6, practiceMin: 10, camId: null }, tests: [], sessions: [] };
+  const DEF = { settings: { ratio: 0.4, cue: 'voice', warn: true, vib: true, segSec: 120, bpm: 6, practiceMin: 10, camId: null }, tests: [], sessions: [] };
   let db;
   try { db = Object.assign({}, DEF, JSON.parse(localStorage.getItem(KEY) || '{}')); db.settings = Object.assign({}, DEF.settings, db.settings); }
   catch (e) { db = JSON.parse(JSON.stringify(DEF)); }
+  if ('sound' in db.settings) { if (db.settings.sound === false) db.settings.cue = 'none'; delete db.settings.sound; } // 旧設定から移す
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { toastQuality('記録を保存できませんでした（容量不足の可能性）', 'bad'); } };
 
   // ---------- 拍の受け皿（カメラ・ベルト共通。時刻は performance.now） ----------
@@ -243,13 +244,90 @@
   let actx = null;
   function ensureAudio() { if (!actx && window.AudioContext) actx = new AudioContext(); if (actx && actx.state === 'suspended') actx.resume(); }
   function chime(up) {
-    if (!db.settings.sound || !actx) return;
+    if (!actx) return;
     const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
     o.type = 'sine';
     o.frequency.setValueAtTime(up ? 392 : 523, t); o.frequency.exponentialRampToValueAtTime(up ? 523 : 392, t + 0.6);
     g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.12, t + 0.08); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
     o.connect(g).connect(actx.destination); o.start(t); o.stop(t + 1);
   }
+
+  // 女性の声（tools/make-voice.ps1 で作った app/voice/*.wav）。頭の無音を切って、切り替わりと声の出だしを合わせる
+  const clips = {};
+  let clipsLoading = null;
+  function loadClips() {
+    if (clipsLoading || !actx) return clipsLoading;
+    clipsLoading = Promise.all(['in', 'out', 'end', 'lost'].map(async (k) => {
+      try {
+        const buf = await actx.decodeAudioData(await (await fetch(`voice/${k}.wav`)).arrayBuffer());
+        const d = buf.getChannelData(0);
+        let i = 0; while (i < d.length && Math.abs(d[i]) < 0.01) i++;
+        clips[k] = { buf, offset: Math.max(0, i / buf.sampleRate - 0.02) };
+      } catch (e) { /* 声が無くても音で続ける */ }
+    }));
+    return clipsLoading;
+  }
+  let voiceSrc = null;
+  function say(k, gain) {
+    const c = clips[k]; if (!c || !actx) return false;
+    // 「脈が取れていません」の途中なら切らない（呼び出し側は音の合図に切り替える）
+    if (voiceSrc && voiceSrc.clip === 'lost' && now() < voiceSrc.endAt && k !== 'end') return false;
+    if (voiceSrc) { try { voiceSrc.stop(); } catch (e) { /* 済み */ } }
+    const s = actx.createBufferSource(), g = actx.createGain();
+    s.buffer = c.buf; g.gain.value = gain || 1;
+    s.connect(g).connect(actx.destination); s.start(0, c.offset);
+    s.clip = k; s.endAt = now() + (c.buf.duration - c.offset) * 1000; voiceSrc = s;
+    return true;
+  }
+  // 呼吸の切り替わりの合図（声・音・なし）
+  function cue(up) {
+    const m = db.settings.cue;
+    if (m === 'voice' && say(up ? 'in' : 'out')) return;
+    if (m !== 'none') chime(up);
+  }
+
+  // 脈が取れないときのやさしい警告音（低めの 2 音がふわっと下がる）。呼吸の合図とは違う音にする
+  function warnTone() {
+    if (!actx) return;
+    const t = actx.currentTime;
+    [[659, 0], [523, 0.35]].forEach(([f, dt]) => {
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = 'triangle'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t + dt); g.gain.exponentialRampToValueAtTime(0.07, t + dt + 0.06); g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.8);
+      o.connect(g).connect(actx.destination); o.start(t + dt); o.stop(t + dt + 0.85);
+    });
+  }
+  function okTone() { // 脈が戻ったとき
+    if (!actx) return;
+    const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
+    o.type = 'sine'; o.frequency.value = 784;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05, t + 0.04); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + 0.55);
+  }
+  // 測りながら実行しているときだけ見張る。3 秒続けて取れなければ鳴らし、取れない間は 8 秒おきに繰り返す
+  function pulseLost() {
+    if (!source) return true; // 途中で接続が切れた
+    if (source === 'cam' && (!finger || camStat.r > 248)) return true;
+    return now() - lastBeatAt > 5000;
+  }
+  function watchPulse() {
+    if (!run || !run.source || !db.settings.warn) return;
+    const t = now();
+    if (t - run.t0 < 10000) return; // 始めの 10 秒は待つ
+    const lost = pulseLost();
+    if (lost) {
+      if (!run.lostSince) { run.lostSince = t; run.warnedAt = 0; }
+      if (t - run.lostSince >= 3000 && t - run.warnedAt >= 8000) {
+        if (!run.warnedAt && db.settings.cue === 'voice' && clips.lost) { warnTone(); setTimeout(() => run && run.lostSince && say('lost', 0.9), 1000); }
+        else warnTone();
+        run.warnedAt = t;
+      }
+    } else if (run.lostSince) {
+      if (run.warnedAt) okTone();
+      run.lostSince = 0;
+    }
+  }
+  setInterval(watchPulse, 1000);
   // カメラで測っている間は振動させない（指とレンズが揺れて、呼吸のテンポに偽の揺れが乗るため）
   function buzz(up) { if (db.settings.vib && source !== 'cam' && navigator.vibrate) navigator.vibrate(up ? 40 : [20, 80, 20]); }
 
@@ -260,10 +338,11 @@
 
   // ---------- 実行（テスト・練習） ----------
   let run = null; // {kind, segs:[{bpm,start,end}], idx, pacerStart, bpm, t0, tEnd, lastPhase}
-  function startRun(kind, plan) {
+  async function startRun(kind, plan) {
     // テストは心拍が要る。練習は測らずにガイドだけでもよい（カメラのライトを長く点けると熱くなるため）
     if (!source && kind === 'test') { toastQuality('先に「カメラで測る」か「心拍ベルト」を選んでください', 'bad'); window.scrollTo(0, 0); return; }
     ensureAudio(); lockScreen();
+    await Promise.race([loadClips(), new Promise(r => setTimeout(r, 2000))]); // 最初の「すって」に間に合わせる
     const t0 = now();
     let acc = t0;
     const segs = plan.map(p => { const s = { bpm: p.bpm, start: acc, end: acc + p.sec * 1000 }; acc = s.end; return s; });
@@ -290,11 +369,11 @@
   function tick() {
     if (!run) return;
     const t = now();
-    if (t >= run.tEnd) { endRun(true); return; }
+    if (t >= run.tEnd) { if (db.settings.cue === 'voice' && !say('end')) chime(false); else if (db.settings.cue === 'chime') chime(false); endRun(true); return; }
     let seg = run.segs[run.idx];
     if (t >= seg.end) { run.idx++; seg = run.segs[run.idx]; run.pacerStart = seg.start; run.bpm = seg.bpm; run.lastPhase = null; }
     const p = S.pacer(t, run.pacerStart, run.bpm, db.settings.ratio);
-    if (p.phase !== run.lastPhase) { chime(p.phase === 'in'); buzz(p.phase === 'in'); run.lastPhase = p.phase; }
+    if (p.phase !== run.lastPhase) { cue(p.phase === 'in'); buzz(p.phase === 'in'); run.lastPhase = p.phase; }
     $('orb').style.transform = `scale(${0.45 + 0.55 * p.size})`;
     $('cueWord').textContent = p.phase === 'in' ? '吸う' : '吐く';
     $('cueSub').textContent = Math.ceil(p.remainMs / 1000) + ' 秒';
@@ -451,7 +530,14 @@
   };
   $('sRatio').value = String(db.settings.ratio);
   $('sRatio').onchange = (e) => { db.settings.ratio = Number(e.target.value); save(); updateNote(); };
-  $('sSound').checked = db.settings.sound; $('sSound').onchange = (e) => { db.settings.sound = e.target.checked; save(); };
+  $('sCue').value = db.settings.cue; $('sCue').onchange = (e) => { db.settings.cue = e.target.value; save(); };
+  $('sWarn').checked = db.settings.warn; $('sWarn').onchange = (e) => { db.settings.warn = e.target.checked; save(); };
+  $('btnVoiceTest').onclick = async () => {
+    ensureAudio(); await loadClips();
+    if (db.settings.cue === 'voice') { say('in'); setTimeout(() => say('out'), 1800); }
+    else if (db.settings.cue === 'chime') { chime(true); setTimeout(() => chime(false), 1200); }
+    if (db.settings.warn) setTimeout(warnTone, 3600);
+  };
   $('sVib').checked = db.settings.vib; $('sVib').onchange = (e) => { db.settings.vib = e.target.checked; save(); };
   $('segSec').value = String(db.settings.segSec);
   $('pBpm').value = db.settings.bpm; $('pMin').value = String(db.settings.practiceMin);

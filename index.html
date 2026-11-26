@@ -151,9 +151,12 @@ nav button.on{color:var(--accent);font-weight:600}
       <label>吸う割合（吸う:吐く）<br>
         <select id="sRatio"><option value="0.4">4:6（吐く方を長く・おすすめ）</option><option value="0.5">5:5</option><option value="0.33">1:2</option></select></label>
       <div class="row" style="margin-top:10px">
-        <label><input type="checkbox" id="sSound" checked> 切り替わりの音</label>
+        <label>吸う・吐くの合図<br><select id="sCue"><option value="voice">女性の声（すって・はいて）</option><option value="chime">音だけ</option><option value="none">なし</option></select></label>
+        <label><input type="checkbox" id="sWarn" checked> 脈が取れないとき警告音</label>
         <label><input type="checkbox" id="sVib" checked> 振動</label>
       </div>
+      <p class="muted">目を閉じたままでも、声で吸う・吐くが分かります。脈が 3 秒以上取れないと、低めの音が「ポーン」と鳴り（最初の 1 回は声でもお知らせ）、戻ると高い音が小さく鳴ります。</p>
+      <button id="btnVoiceTest">合図と警告音を試す</button>
     </div>
     <div class="card">
       <h2>記録のバックアップ</h2>
