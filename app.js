@@ -7,7 +7,7 @@
 
   // ---------- 保存 ----------
   const KEY = 'resonance-breath.v1';
-  const DEF = { settings: { ratio: 0.4, cue: 'voice', warn: true, vib: true, segSec: 120, bpm: 6, practiceMin: 10, camId: null }, tests: [], sessions: [] };
+  const DEF = { settings: { ratio: 0.4, cue: 'voice', warn: true, vib: true, segSec: 120, bpm: 6, practiceMin: 10, camId: null, verify: false }, tests: [], sessions: [] };
   let db;
   try { db = Object.assign({}, DEF, JSON.parse(localStorage.getItem(KEY) || '{}')); db.settings = Object.assign({}, DEF.settings, db.settings); }
   catch (e) { db = JSON.parse(JSON.stringify(DEF)); }
@@ -26,6 +26,34 @@
     if (b.ok) $('hrNow').textContent = Math.round(60000 / b.rr);
   }
 
+  // ---------- 検証モード（カメラと胸ベルトを同時に記録。docs/製品設計.md §2.1） ----------
+  // ON のとき: 胸ベルトが主（テスト・練習はベルトの拍で動く）、カメラは従（拍を記録するだけ）。OFF のときは今までと同じ
+  let verifyLog = null;
+  const verifyOn = () => !!db.settings.verify;
+  function ensureVerifyLog() {
+    if (!verifyLog) verifyLog = { format: 'metatron-verify', version: 1, userAgent: navigator.userAgent, startedAt: new Date().toISOString(), startedPerf: now(),
+      cam: { beats: [], stat: [] }, ble: { notifications: [] }, segments: [] };
+    return verifyLog;
+  }
+  let lastCamStatLog = 0;
+  function logCamStat(t, fps, r, g, on) {
+    if (!verifyOn() || t - lastCamStatLog < 1000) return;
+    lastCamStatLog = t; const L = ensureVerifyLog();
+    if (L.cam.stat.length < 20000) L.cam.stat.push({ t, fps, r, g, finger: on });
+  }
+  // 主の機器を決め直す（検証モードのみ。ベルトがつながっていればベルト、なければカメラ）
+  function updateSource() {
+    source = (bleDevice && bleDevice.gatt && bleDevice.gatt.connected && bleChar) ? 'ble' : (camStream ? 'cam' : null);
+  }
+  function onCamBeat(b) {
+    if (verifyOn()) {
+      const L = ensureVerifyLog();
+      if (L.cam.beats.length < 20000) L.cam.beats.push({ t: b.t, ibi: b.rr, ok: b.ok });
+      if (source !== 'cam') return; // ベルトが主のときは記録だけ（警告・判定には使わない）
+    }
+    onBeat(b);
+  }
+
   // ---------- カメラ（指先 PPG） ----------
   const video = $('video');
   let camStream = null, camTrack = null, detector = null, frameCanvas = null, frameCtx = null;
@@ -42,7 +70,7 @@
 
   async function startCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toastQuality('このブラウザではカメラが使えません（https で開いているか確認）', 'bad'); return; }
-    stopAll();
+    if (verifyOn()) stopCam(); else stopAll();
     setQuality('カメラを準備中…', '');
     let stream;
     try { stream = await openStream(db.settings.camId); }
@@ -68,7 +96,7 @@
     }
     video.srcObject = stream;
     try { await video.play(); } catch (e) { /* 再生は frame callback で拾う */ }
-    source = 'cam';
+    if (verifyOn()) updateSource(); else source = 'cam';
     detector = new S.PpgBeatDetector();
     frameCanvas = document.createElement('canvas'); frameCanvas.width = 40; frameCanvas.height = 30;
     frameCtx = frameCanvas.getContext('2d', { willReadFrequently: true });
@@ -116,12 +144,13 @@
     // 指が乗ってライトが当たると、赤が強く緑が弱い
     const on = r > 60 && r > g * 1.8;
     if (on !== finger) { finger = on; fingerSince = t; if (!on) detector.reset(); }
+    logCamStat(t, camStat.length / 2, Math.round(r * 10) / 10, Math.round(g * 10) / 10, on);
     ppgBuf.push({ t, v: on ? r : NaN });
     while (ppgBuf.length && ppgBuf[0].t < t - 6000) ppgBuf.shift();
     if (!on) return;
     if (t - fingerSince < 1500) return; // 乗せた直後は明るさが落ち着くまで待つ
     const out = detector.push(t, r);
-    for (const b of out) onBeat(b);
+    for (const b of out) onCamBeat(b);
   }
 
   // ---------- 心拍ベルト（Web Bluetooth） ----------
@@ -130,9 +159,9 @@
     if (!navigator.bluetooth) { toastQuality('このブラウザは Bluetooth に対応していません（Android の Chrome で開いてください）', 'bad'); return; }
     try {
       const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: ['heart_rate'] }] });
-      stopAll();
+      if (verifyOn()) stopBle(); else stopAll();
       bleDevice = dev;
-      dev.addEventListener('gattserverdisconnected', () => { if (source === 'ble') { setQuality('ベルトとの接続が切れました', 'bad'); $('btnBle').textContent = '心拍ベルト'; source = null; } });
+      dev.addEventListener('gattserverdisconnected', () => { if (source === 'ble') { setQuality('ベルトとの接続が切れました', 'bad'); $('btnBle').textContent = '心拍ベルト'; source = (verifyOn() && camStream) ? 'cam' : null; } });
       setQuality('ベルトに接続中…', '');
       const srv = await dev.gatt.connect();
       const svc = await srv.getPrimaryService('heart_rate');
@@ -150,6 +179,7 @@
   function onBleValue(ev) {
     const m = S.parseHeartRateMeasurement(ev.target.value);
     const t = now();
+    if (verifyOn()) { const L = ensureVerifyLog(); if (L.ble.notifications.length < 20000) L.ble.notifications.push({ t, hr: m.hr, rr: m.rr.slice() }); }
     if (!m.rr.length) { if (m.hr) $('hrNow').textContent = m.hr; setQuality('ベルトが拍間隔（RR）を送っていません。対応機種か確認してください', 'weak'); return; }
     // 届いた RR を後ろから並べて拍の時刻を復元する。ずれが 3 秒を超えたら今の時刻に合わせ直す
     let tEnd = t;
@@ -166,13 +196,19 @@
     bleLastT = tEnd;
   }
 
-  function stopAll() {
+  function stopCam() {
     stopStream(camStream); camStream = null; camTrack = null; video.srcObject = null;
     $('btnCam').textContent = 'カメラで測る';
+    finger = false; ppgBuf = [];
+  }
+  function stopBle() {
     if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect();
     bleDevice = null; bleChar = null;
     $('btnBle').textContent = '心拍ベルト';
-    source = null; finger = false; ppgBuf = [];
+  }
+  function stopAll() {
+    stopCam(); stopBle();
+    source = null;
   }
 
   // ---------- 信号の状態表示 ----------
@@ -365,6 +401,7 @@
     let acc = t0;
     const segs = plan.map(p => { const s = { bpm: p.bpm, start: acc, end: acc + p.sec * 1000 }; acc = s.end; return s; });
     run = { kind, source, segs, idx: 0, pacerStart: t0, bpm: segs[0].bpm, t0, tEnd: acc, lastPhase: null, beatFrom: beats.length };
+    if (verifyOn()) run.verifyRecs = segs.map(s => { const o = { kind, startT: s.start, bpm: s.bpm, durationMs: s.end - s.start }; ensureVerifyLog().segments.push(o); return o; });
     $('guideCard').classList.remove('hidden');
     $('srcCard').querySelector('.src').classList.add('hidden');
     document.querySelectorAll('nav button').forEach(b => b.disabled = true);
@@ -381,6 +418,7 @@
     $('testIntro').classList.remove('hidden'); $('practiceSetup').classList.remove('hidden');
     if (!r) return;
     const tStop = now();
+    if (r.verifyRecs) for (const o of r.verifyRecs) { o.durationMs = Math.max(0, Math.min(o.durationMs, tStop - o.startT)); if (o.durationMs <= 0 && verifyLog) verifyLog.segments.splice(verifyLog.segments.indexOf(o), 1); }
     if (r.kind === 'test') finishTest(r, completed, tStop); else finishPractice(r, tStop);
   }
 
@@ -555,6 +593,14 @@
     if (db.settings.cue === 'voice') { say('in'); setTimeout(() => say('out'), 1800); }
     else if (db.settings.cue === 'chime') { chime(true); setTimeout(() => chime(false), 1200); }
     if (db.settings.warn) setTimeout(warnTone, 3600);
+  };
+  $('sVerify').checked = db.settings.verify; $('sVerify').onchange = (e) => { db.settings.verify = e.target.checked; save(); $('verifyBox').classList.toggle('hidden', !e.target.checked); };
+  $('verifyBox').classList.toggle('hidden', !db.settings.verify);
+  $('btnVerifyExport').onclick = () => {
+    if (!verifyLog || (!verifyLog.cam.beats.length && !verifyLog.ble.notifications.length)) { toastQuality('書き出す検証データがまだありません', 'weak'); showTab('test'); return; }
+    const d = new Date(), z = (n) => String(n).padStart(2, '0');
+    download(`metatron-verify-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.json`,
+      Object.assign({}, verifyLog, { exportedAt: d.toISOString(), exportedPerf: now() }));
   };
   $('sVib').checked = db.settings.vib; $('sVib').onchange = (e) => { db.settings.vib = e.target.checked; save(); };
   $('segSec').value = String(db.settings.segSec);
